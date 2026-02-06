@@ -16,6 +16,11 @@ let duration = 180; // 3 минуты
 let startTime;
 const FPS = 60;
 
+// НАЧАЛЬНАЯ ФАЗА (первые 15 секунд)
+let initialPhaseDuration = 15; // 15 секунд начальной фазы
+let inInitialPhase = true;
+let initialPhaseStartTime;
+
 function setup() {
     // Рассчитываем 16:9
     let w = windowWidth;
@@ -28,6 +33,7 @@ function setup() {
     textFont('Courier New');
     textAlign(CENTER, CENTER);
     startTime = millis();
+    initialPhaseStartTime = millis();
 }
 
 function draw() {
@@ -37,36 +43,66 @@ function draw() {
     if (progress >= 1.0) {
         digits = [];
         startTime = millis();
+        initialPhaseStartTime = millis();
+        inInitialPhase = true;
         return;
     }
 
     // ТАЮЩИЙ СЛЕД:
-    // Регулируем прозрачность слоя для эффекта троссирующего следа
-    // Чем ближе к финалу, тем плотнее становится экран
     let tailOpacity = map(progress, 0, 1, 45, 15);
     background(0, 8, 20, tailOpacity);
 
+    // НАЧАЛЬНАЯ ФАЗА: цифры появляются из темноты без движения
+    if (inInitialPhase) {
+        let initialElapsed = (millis() - initialPhaseStartTime) / 1000;
+        let initialProgress = initialElapsed / initialPhaseDuration;
+        
+        // Заканчиваем начальную фазу
+        if (initialProgress >= 1.0) {
+            inInitialPhase = false;
+        }
+        
+        // В начальной фазе цифры очень медленно появляются по всему экрану
+        let initialSpawnRate = map(initialProgress, 0, 1, 0.1, 2); // Очень медленно
+        for (let i = 0; i < initialSpawnRate; i++) {
+            // В начальной фазе создаем особые цифры (без движения)
+            digits.push(new Digit(progress, true, initialProgress));
+        }
+        
+        // В начальной фазе НЕ СОРТИРУЕМ по Z, чтобы не было скачков
+        for (let i = digits.length - 1; i >= 0; i--) {
+            digits[i].update(progress, inInitialPhase, initialProgress);
+            digits[i].display(progress, inInitialPhase, initialProgress);
+            
+            // Удаляем только если полностью невидимы
+            if (digits[i].brightness <= 0) {
+                digits.splice(i, 1);
+            }
+        }
+        
+        return; // Выходим из draw - пропускаем основную логику
+    }
+
+    // ОСНОВНАЯ ФАЗА (оригинальная логика)
+    
     // КОЛИЧЕСТВО:
-    // Экспоненциальный рост числа цифр
     let spawnRate = map(pow(progress, 2.5), 0, 1, 0.5, 40);
     for (let i = 0; i < spawnRate; i++) {
-        digits.push(new Digit(progress));
+        digits.push(new Digit(progress, false, 0));
     }
 
     // ДРОЖАНИЕ ЭКРАНА:
-    // Начинается после 60% времени, усиливается к концу
     if (progress > 0.6) {
         let shake = map(progress, 0.6, 1, 0, 12);
         translate(random(-shake, shake), random(-shake, shake));
     }
 
     // ОБРАБОТКА ЦИФР:
-    // Сортируем по Z, чтобы дальние были за ближними (параллакс)
     digits.sort((a, b) => a.z - b.z);
 
     for (let i = digits.length - 1; i >= 0; i--) {
-        digits[i].update(progress);
-        digits[i].display(progress);
+        digits[i].update(progress, false, 0);
+        digits[i].display(progress, false, 0);
         
         if (digits[i].y < -100) {
             digits.splice(i, 1);
@@ -75,12 +111,20 @@ function draw() {
 }
 
 class Digit {
-    constructor(p) {
+    constructor(p, isInitialPhase, initialProgress) {
         // Глубина: 0.1 (далеко) до 1.0 (близко)
         this.z = random(0.1, 1.0);
         
-        this.x = random(width);
-        this.y = height + 50;
+        // В начальной фазе цифры появляются по всему экрану, не только снизу
+        if (isInitialPhase) {
+            this.x = random(width);
+            // В начальной фазе Y случайный по всему экрану, но не слишком высоко
+            this.y = random(height * 0.2, height * 0.9);
+        } else {
+            this.x = random(width);
+            this.y = height + 50;
+        }
+        
         this.char = random() > 0.5 ? "1" : "0";
         
         // Прямолинейная скорость зависит от глубины
@@ -91,9 +135,57 @@ class Digit {
         
         // Яркость: дальние темнее, ближние ярче
         this.brightness = map(this.z, 0.1, 1.0, 50, 255);
+        
+        // Для начальной фазы: постепенное появление из темноты
+        if (isInitialPhase) {
+            // В начале начальной фазы цифры полностью невидимы
+            this.currentBrightness = 0;
+            this.targetBrightness = this.brightness;
+            // Задержка появления для каждой цифры
+            this.appearDelay = random(0, initialProgress * 0.7);
+            // Скорость появления
+            this.appearSpeed = random(0.005, 0.02);
+        } else {
+            this.currentBrightness = this.brightness;
+        }
+        
+        // Флаг для плавного старта движения
+        this.movementStarted = !isInitialPhase;
+        this.movementProgress = 0;
+        this.originalSpeed = this.speed;
+        this.originalY = this.y;
     }
 
-    update(p) {
+    update(p, isInitialPhase, initialProgress) {
+        if (isInitialPhase) {
+            // НАЧАЛЬНАЯ ФАЗА: плавное появление из темноты
+            if (initialProgress > this.appearDelay) {
+                // Плавное увеличение яркости
+                this.currentBrightness = min(
+                    this.currentBrightness + this.appearSpeed * this.targetBrightness,
+                    this.targetBrightness
+                );
+            }
+            
+            // Очень медленное начало движения в конце начальной фазы
+            if (initialProgress > 0.7 && !this.movementStarted) {
+                this.movementStarted = true;
+                this.movementProgress = 0;
+            }
+            
+            if (this.movementStarted) {
+                // Плавное увеличение скорости движения
+                this.movementProgress = min(this.movementProgress + 0.002, 1.0);
+                let movementMultiplier = easeInOutQuad(this.movementProgress);
+                
+                // Движение вверх с плавным ускорением
+                this.y -= this.originalSpeed * movementMultiplier * 0.5; // В 2 раза медленнее в начале
+            }
+            
+            return;
+        }
+        
+        // ОСНОВНАЯ ФАЗА (оригинальная логика)
         // Движение строго вверх
         this.y -= this.speed;
 
@@ -110,25 +202,43 @@ class Digit {
         }
     }
 
-    display(p) {
+    display(p, isInitialPhase, initialProgress) {
         let pColor = map(p, 0, 1, 0, 100); // прогресс цвета
         
-        // Цветовая палитра: Холодный синий -> Глубокий голубой
-        // Добавляем немного вариативности в яркость
-        let varBright = this.brightness * random(0.8, 1.2);
+        // Для начальной фазы используем текущую яркость
+        let varBright = isInitialPhase ? 
+            this.currentBrightness * random(0.9, 1.1) : 
+            this.brightness * random(0.8, 1.2);
         
         // Отрисовка свечения для ближних цифр
-        if (this.z > 0.8) {
-            drawingContext.shadowBlur = map(p, 0, 1, 2, 15);
+        if (this.z > 0.8 && (!isInitialPhase || initialProgress > 0.5)) {
+            drawingContext.shadowBlur = isInitialPhase ? 
+                map(initialProgress, 0.5, 1, 0, 8) : 
+                map(p, 0, 1, 2, 15);
             drawingContext.shadowColor = `rgba(0, 180, 255, 0.6)`;
         }
 
-        fill(0, varBright * 0.8, varBright, varBright);
+        // В начальной фазе более темные цвета для эффекта "появления из темноты"
+        let r = 0;
+        let g = isInitialPhase ? 
+            varBright * 0.6 * (0.5 + initialProgress * 0.5) : 
+            varBright * 0.8;
+        let b = isInitialPhase ? 
+            varBright * (0.3 + initialProgress * 0.7) : 
+            varBright;
+        let alpha = isInitialPhase ? this.currentBrightness : varBright;
+
+        fill(r, g, b, alpha);
         textSize(this.baseSize);
         text(this.char, this.x, this.y);
         
         drawingContext.shadowBlur = 0;
     }
+}
+
+// Функция плавного ускорения
+function easeInOutQuad(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
 function windowResized() {
