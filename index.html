@@ -2,14 +2,11 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Digital Art: Vertical Depth (Optimized)</title>
+    <title>Digital Art: Vertical Depth</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
     <style>
         body { margin: 0; overflow: hidden; background: #000; }
-        canvas { 
-            display: block; 
-            margin: auto;
-        }
+        canvas { display: block; margin: auto; }
     </style>
 </head>
 <body>
@@ -17,186 +14,127 @@
 let digits = [];
 let duration = 180; // 3 минуты
 let startTime;
-const MAX_DIGITS = 2500; // Ограничиваем максимальное количество
-
-// Оптимизация: предварительно рассчитанные значения
-let lastSpawnTime = 0;
-let needsSort = false; // Флаг для сортировки
-let lastProgress = 0;
+const FPS = 60;
 
 function setup() {
+    // Рассчитываем 16:9
     let w = windowWidth;
     let h = (windowWidth * 9) / 16;
     if (h > windowHeight) {
         h = windowHeight;
         w = (windowHeight * 16) / 9;
     }
-    let canvas = createCanvas(w, h);
-    
-    // Используем моноширинный шрифт
-    textFont('monospace');
+    createCanvas(w, h);
+    textFont('Courier New');
     textAlign(CENTER, CENTER);
-    
     startTime = millis();
-    lastSpawnTime = millis();
 }
 
 function draw() {
     let elapsed = (millis() - startTime) / 1000;
-    let progress = elapsed / duration;
+    let progress = elapsed / duration; // 0.0 -> 1.0
 
-    // Сброс анимации
     if (progress >= 1.0) {
         digits = [];
         startTime = millis();
-        lastSpawnTime = millis();
-        needsSort = false;
-        lastProgress = 0;
-        clear();
         return;
     }
 
-    // 1. ОПТИМИЗИРОВАННЫЙ СЛЕД
-    // Используем полупрозрачный черный прямоугольник для эффекта следа
-    fill(0, 0, 0, 20);
-    noStroke();
-    rect(0, 0, width, height);
+    // ТАЮЩИЙ СЛЕД:
+    // Регулируем прозрачность слоя для эффекта троссирующего следа
+    // Чем ближе к финалу, тем плотнее становится экран
+    let tailOpacity = map(progress, 0, 1, 45, 15);
+    background(0, 8, 20, tailOpacity);
 
-    // 2. ОПТИМИЗИРОВАННОЕ СОЗДАНИЕ ЦИФР
-    let currentTime = millis();
-    if (currentTime - lastSpawnTime > 16 && digits.length < MAX_DIGITS) { // ~60 FPS
-        lastSpawnTime = currentTime;
-        
-        // Используем кубическую функцию для более плавного роста
-        let spawnRate = map(pow(progress, 2), 0, 1, 0.5, 30);
-        
-        // Ограничиваем количество создаваемых цифр за кадр
-        let spawnCount = min(floor(spawnRate), 8);
-        
-        for (let i = 0; i < spawnCount; i++) {
-            digits.push(new Digit(progress));
-        }
-        needsSort = true;
+    // КОЛИЧЕСТВО:
+    // Экспоненциальный рост числа цифр
+    let spawnRate = map(pow(progress, 2.5), 0, 1, 0.5, 40);
+    for (let i = 0; i < spawnRate; i++) {
+        digits.push(new Digit(progress));
     }
 
-    // 3. ОПТИМИЗИРОВАННАЯ СОРТИРОВКА
-    // Сортируем только когда нужно и не каждый кадр
-    if (needsSort && digits.length > 100 && frameCount % 10 === 0) {
-        digits.sort((a, b) => a.z - b.z);
-        needsSort = false;
-    }
-
-    // 4. ДРОЖАНИЕ ЭКРАНА (обработка отдельно)
-    let shakeX = 0, shakeY = 0;
+    // ДРОЖАНИЕ ЭКРАНА:
+    // Начинается после 60% времени, усиливается к концу
     if (progress > 0.6) {
-        let shake = map(progress, 0.6, 1, 0, 8);
-        shakeX = random(-shake, shake);
-        shakeY = random(-shake, shake);
+        let shake = map(progress, 0.6, 1, 0, 12);
+        translate(random(-shake, shake), random(-shake, shake));
     }
 
-    // 5. ОПТИМИЗИРОВАННАЯ ОТРИСОВКА
-    push();
-    translate(shakeX, shakeY);
-    
-    // Рисуем цифры с конца для правильного перекрытия
+    // ОБРАБОТКА ЦИФР:
+    // Сортируем по Z, чтобы дальние были за ближними (параллакс)
+    digits.sort((a, b) => a.z - b.z);
+
     for (let i = digits.length - 1; i >= 0; i--) {
-        let digit = digits[i];
+        digits[i].update(progress);
+        digits[i].display(progress);
         
-        // Удаляем если вышли за пределы или исчезли
-        if (digit.y < -100 || digit.brightness <= 10) {
+        if (digits[i].y < -100) {
             digits.splice(i, 1);
-            continue;
         }
-        
-        digit.update(progress);
-        digit.display();
     }
-    
-    pop();
-    
-    lastProgress = progress;
 }
 
 class Digit {
     constructor(p) {
+        // Глубина: 0.1 (далеко) до 1.0 (близко)
         this.z = random(0.1, 1.0);
+        
         this.x = random(width);
-        this.y = height + random(50, 150); // Разный старт
+        this.y = height + 50;
         this.char = random() > 0.5 ? "1" : "0";
-        this.speed = map(this.z, 0.1, 1.0, 1.0, 10.0);
-        this.baseSize = map(this.z, 0.1, 1.0, 10, 36);
-        this.brightness = map(this.z, 0.1, 1.0, 60, 255);
         
-        // Кэшируем цвет
-        this.colorR = 0;
-        this.colorG = this.brightness * 0.7;
-        this.colorB = this.brightness;
+        // Прямолинейная скорость зависит от глубины
+        this.speed = map(this.z, 0.1, 1.0, 1, 12);
         
-        // Флаг для свечения
-        this.hasGlow = this.z > 0.7;
+        // Размер зависит от глубины
+        this.baseSize = map(this.z, 0.1, 1.0, 8, 42);
         
-        // Случайное смещение для дрожания
-        this.jitterX = 0;
-        this.jitterY = 0;
+        // Яркость: дальние темнее, ближние ярче
+        this.brightness = map(this.z, 0.1, 1.0, 50, 255);
     }
 
     update(p) {
-        // Движение вверх
+        // Движение строго вверх
         this.y -= this.speed;
-        
-        // Дрожание в конце
+
+        // Легкое дрожание самих цифр (индивидуальное) в конце
         if (p > 0.7) {
-            let jitterAmount = map(p, 0.7, 1, 0, 2.5);
-            this.jitterX = random(-jitterAmount, jitterAmount);
-            this.jitterY = random(-jitterAmount, jitterAmount);
+            let jitter = map(p, 0.7, 1, 0, 3);
+            this.x += random(-jitter, jitter);
         }
         
-        // Замедление в самом конце
-        if (p > 0.92) {
-            this.speed *= 0.995;
-            // Постепенное исчезновение
-            this.brightness *= 0.99;
-            this.colorG = this.brightness * 0.7;
-            this.colorB = this.brightness;
+        // Эффект заполнения (катарсис): в конце цифры могут начать замедляться 
+        // или наслаиваться друг на друга, заполняя 70% экрана
+        if (p > 0.9) {
+            this.speed *= 0.99; // эффект вязкости в конце
         }
     }
 
-    display() {
-        // Эффект свечения для ближних цифр
-        if (this.hasGlow && this.brightness > 100) {
-            fill(100, 180, 255, this.brightness * 0.3);
-            textSize(this.baseSize * 1.1);
-            text(this.char, this.x + this.jitterX, this.y + this.jitterY);
-        }
+    display(p) {
+        let pColor = map(p, 0, 1, 0, 100); // прогресс цвета
         
-        // Основная цифра
-        fill(this.colorR, this.colorG, this.colorB, this.brightness);
+        // Цветовая палитра: Холодный синий -> Глубокий голубой
+        // Добавляем немного вариативности в яркость
+        let varBright = this.brightness * random(0.8, 1.2);
+        
+        // Отрисовка свечения для ближних цифр
+        if (this.z > 0.8) {
+            drawingContext.shadowBlur = map(p, 0, 1, 2, 15);
+            drawingContext.shadowColor = `rgba(0, 180, 255, 0.6)`;
+        }
+
+        fill(0, varBright * 0.8, varBright, varBright);
         textSize(this.baseSize);
-        text(this.char, this.x + this.jitterX, this.y + this.jitterY);
+        text(this.char, this.x, this.y);
+        
+        drawingContext.shadowBlur = 0;
     }
 }
 
 function windowResized() {
     let w = windowWidth;
     let h = (windowWidth * 9) / 16;
-    if (h > windowHeight) {
-        h = windowHeight;
-        w = (windowHeight * 16) / 9;
-    }
     resizeCanvas(w, h);
-}
-
-// Дебаг информация
-function keyPressed() {
-    if (key === 'd' || key === 'D') {
-        console.log('Digits:', digits.length, 'FPS:', frameRate().toFixed(1));
-    }
-    if (key === ' ') {
-        // Перезапуск анимации
-        digits = [];
-        startTime = millis();
-        lastSpawnTime = millis();
-    }
 }
 </script>
 </body>
